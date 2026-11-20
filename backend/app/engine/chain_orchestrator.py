@@ -17,6 +17,7 @@ from app.engine.metric_calculator import MetricCalculator
 from app.engine.sql_binder import SqlTemplateBinder
 from app.engine.query_optimizer import QueryOptimizer
 from app.engine.export_sharder import ExportSharder
+from app.engine.domain_source_validator import DomainSourceValidator
 
 
 class ChainOrchestrator:
@@ -40,6 +41,7 @@ class ChainOrchestrator:
         self.binder = SqlTemplateBinder()
         self.optimizer = QueryOptimizer()
         self.sharder = ExportSharder()
+        self.source_validator = DomainSourceValidator()
 
     # ───────────────────────────────────────────────
     # 链路 1: 指标计算链
@@ -48,19 +50,31 @@ class ChainOrchestrator:
         """指标计算链：数据源连接→指标域→派生指标→数据聚合。"""
         result = {"chain": "metric_compute", "steps": [], "ok": True}
 
-        # Step 1: 校验数据源连接
+        # Step 1: 用域源映射校验包校验实际取数连接（证据绑定连接编号，同库名连接不能替代）
         domain = next((r for r in store.rows("metric_domain") if r.get("域编号") == domain_code), None)
         if not domain:
             result["ok"] = False
             result["steps"].append({"step": 1, "module": "datasource_connect", "status": "error", "detail": f"指标域 {domain_code} 不存在"})
             return result
 
-        ds_table = domain.get("数据源表", "")
-        ds = next((r for r in store.rows("datasource_connect") if r.get("数据库名") == ds_table or r.get("连接编号") == ds_table), None)
-        if not ds or ds.get("status") != "已连接":
-            result["steps"].append({"step": 1, "module": "datasource_connect", "status": "warning", "detail": "数据源未连接或不存在"})
-        else:
-            result["steps"].append({"step": 1, "module": "datasource_connect", "status": "ok", "detail": f"数据源 {ds.get('连接编号')} 已连接"})
+        auth = self.source_validator.check_fetch_authorization(domain_code)
+        if not auth["ok"]:
+            agg = store.find("data_aggregate", aggregate_id)
+            evidence = auth.get("evidence") or {}
+            result["ok"] = False
+            result["steps"].append({"step": 1, "module": "datasource_connect", "status": "error", "detail": f"取数连接校验失败：{auth['reason']}"})
+            result["affected"] = {
+                "数据源归属": [{
+                    "域编号": domain_code,
+                    "数据源表": domain.get("数据源表", ""),
+                    "证据编号": evidence.get("校验编号", ""),
+                    "证据连接编号": evidence.get("连接编号", ""),
+                    "失效原因": auth["reason"],
+                }],
+                "输出表": [agg.get("输出表名", "")] if agg else [],
+            }
+            return result
+        result["steps"].append({"step": 1, "module": "datasource_connect", "status": "ok", "detail": f"取数连接 {auth['连接编号']} 校验通过（证据 {auth['evidence'].get('校验编号')}）"})
 
         # Step 2: 校验指标域
         if domain.get("status") != "已启用":
@@ -89,6 +103,19 @@ class ChainOrchestrator:
             result["steps"].append({"step": 4, "module": "data_aggregate", "status": "warning", "detail": f"聚合配置状态为 {agg.get('status')}"})
         else:
             plan = self.calculator.build_compute_plan(aggregate_id)
+            if not plan.get("ok"):
+                result["ok"] = False
+                affected = plan.get("affected_sources", [])
+                affected_desc = "；".join(
+                    f"{item.get('域编号')}（数据源表 {item.get('数据源表')}，证据连接 {item.get('证据连接编号') or '无'}）：{item.get('失效原因')}"
+                    for item in affected
+                )
+                result["steps"].append({
+                    "step": 4, "module": "data_aggregate", "status": "error",
+                    "detail": f"聚合计划生成失败：{plan.get('error')}。受影响数据源归属：{affected_desc}；受影响输出表：{plan.get('output_table', '')}",
+                })
+                result["affected"] = {"数据源归属": affected, "输出表": [plan.get("output_table", "")]}
+                return result
             result["steps"].append({"step": 4, "module": "data_aggregate", "status": "ok", "detail": f"聚合计划生成成功，共 {len(plan.get('steps', []))} 步"})
             result["compute_plan"] = plan
 

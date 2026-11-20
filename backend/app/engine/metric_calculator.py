@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.store import store
+from app.engine.domain_source_validator import DomainSourceValidator
 
 
 class MetricFormula:
@@ -120,19 +121,48 @@ class MetricCalculator:
             elif part.startswith("DERI-"):
                 metric_codes.append(part)
 
+        # 用域源映射校验包校验每个指标域的实际取数连接；
+        # 证据失效时说明受影响的数据源归属和输出表，不再生成计划
+        validator = DomainSourceValidator()
+        authorized: dict[str, str] = {}
+        affected: list[dict[str, Any]] = []
+        for dc in domain_codes:
+            auth = validator.check_fetch_authorization(dc)
+            if auth["ok"]:
+                authorized[dc] = str(auth["连接编号"])
+                continue
+            domain = next((r for r in store.rows("metric_domain") if r.get("域编号") == dc), None)
+            evidence = auth.get("evidence") or {}
+            affected.append({
+                "域编号": dc,
+                "数据源表": (domain or {}).get("数据源表", ""),
+                "证据编号": evidence.get("校验编号", ""),
+                "证据连接编号": evidence.get("连接编号", ""),
+                "失效原因": auth["reason"],
+            })
+        if affected:
+            return {
+                "ok": False,
+                "aggregate_id": aggregate_config_id,
+                "error": "域源映射校验失败：取数证据失效，不能生成聚合计划",
+                "affected_sources": affected,
+                "output_table": agg.get("输出表名", ""),
+            }
+
         plan = {
             "ok": True,
             "aggregate_id": aggregate_config_id,
             "steps": [],
         }
 
-        # Step 1: 加载指标域数据
+        # Step 1: 加载指标域数据（记录实际取数连接）
         for dc in domain_codes:
             plan["steps"].append({
                 "step": 1,
                 "type": "load_domain",
                 "domain_code": dc,
-                "description": f"从指标域 {dc} 加载原子数据",
+                "connection_code": authorized[dc],
+                "description": f"从指标域 {dc} 加载原子数据（取数连接 {authorized[dc]}）",
             })
 
         # Step 2: 计算派生指标（拓扑排序后）
@@ -160,6 +190,68 @@ class MetricCalculator:
         })
 
         return plan
+
+    def execute_compute_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        """直接执行一份已生成的聚合计划：逐步核对取数范围后再放行。
+
+        计划里每个 load_domain 步骤记录的取数连接，必须仍被当前域源校验证据
+        授权；连接断开或换了连接时旧计划不能沿用，拒绝执行并说明受影响的
+        数据源归属和输出表。
+        """
+        if not plan.get("ok"):
+            return {"ok": False, "error": "计划本身不可用，不能执行", "refused": [], "fetch_range": []}
+
+        validator = DomainSourceValidator()
+        fetch_range: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        output_table = ""
+        for step in plan.get("steps", []):
+            if step.get("type") == "aggregate":
+                output_table = step.get("output_table", "")
+                continue
+            if step.get("type") != "load_domain":
+                continue
+            dc = str(step.get("domain_code", ""))
+            planned_conn = str(step.get("connection_code", ""))
+            auth = validator.check_fetch_authorization(dc)
+            domain = next((r for r in store.rows("metric_domain") if r.get("域编号") == dc), None)
+            ds_table = (domain or {}).get("数据源表", "")
+            if not auth["ok"]:
+                refused.append({
+                    "域编号": dc,
+                    "数据源表": ds_table,
+                    "计划取数连接": planned_conn,
+                    "失效原因": auth["reason"],
+                })
+            elif planned_conn and str(auth["连接编号"]) != planned_conn:
+                refused.append({
+                    "域编号": dc,
+                    "数据源表": ds_table,
+                    "计划取数连接": planned_conn,
+                    "当前授权连接": auth["连接编号"],
+                    "失效原因": "取数连接已变更，旧计划不能沿用",
+                })
+            else:
+                fetch_range.append({
+                    "域编号": dc,
+                    "连接编号": planned_conn or str(auth["连接编号"]),
+                    "数据源表": auth["数据源表"],
+                })
+
+        if refused:
+            return {
+                "ok": False,
+                "error": "旧计划的取数授权已失效，拒绝执行",
+                "refused": refused,
+                "fetch_range": fetch_range,
+                "output_table": output_table,
+            }
+        return {
+            "ok": True,
+            "message": "取数范围核对通过，计划可执行",
+            "fetch_range": fetch_range,
+            "output_table": output_table,
+        }
 
     def preview_sql(self, aggregate_config_id: int) -> str:
         """为聚合配置生成预览SQL。"""

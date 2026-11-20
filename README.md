@@ -67,6 +67,7 @@ npm run dev
 | SQL模板 | `sql_template` | 模板定义 | 模板编号、模板名称、SQL片段 |
 | 结果缓存 | `result_cache` | 缓存配置 | 配置编号、缓存键、缓存引擎 |
 | 查询审计 | `query_audit` | 审计日志 | 日志编号、接口编号、调用方 |
+| 域源映射校验 | `domain_source_validation` | 校验证据 | 校验编号、域编号、连接编号、校验状态 |
 
 ## 约定
 

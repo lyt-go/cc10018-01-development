@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.store import store
+from app.engine.domain_source_validator import DomainSourceValidator
 
 MODULE = "metric_domain"
 LIST_FIELDS = ["域编号", "域名称", "业务域描述", "数据源表", "更新频率", "负责人", "域状态", "创建时间"]
@@ -48,6 +49,9 @@ class MetricDomainService:
         entry["pending"] = True
         entry["abnormal"] = False
         rows.append(entry)
+        # 登记时对数据源表与连接配置做域源映射校验，证据记录归属连接编号与校验状态
+        validation = DomainSourceValidator().validate_domain(str(entry.get("域编号", "")), reason="登记校验")
+        entry["_域源校验"] = validation["message"]
         return entry, []
 
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
@@ -59,6 +63,12 @@ class MetricDomainService:
         target = ACTION_RULES[action]
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
+        if action == "开启域":
+            # 启用时重新校验数据源表与连接配置，无有效取数连接不允许启用
+            validation = DomainSourceValidator().validate_domain(str(entry.get("域编号", "")), reason="启用校验")
+            if not validation["ok"]:
+                return None, f"开启域被拦截：{validation['message']}"
+            entry["_域源校验"] = validation["message"]
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS

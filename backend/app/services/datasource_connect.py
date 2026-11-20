@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.store import store
+from app.engine.domain_source_validator import DomainSourceValidator
 
 MODULE = "datasource_connect"
 LIST_FIELDS = ["连接编号", "数据源类型", "连接地址", "认证方式", "数据库名", "连接池大小", "连接超时", "最后校验"]
@@ -62,4 +63,10 @@ class DatasourceConnectService:
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
-        return entry, f"连接配置已{action}"
+        message = f"连接配置已{action}"
+        if action == "标记断开":
+            # 连接断开后，绑定该连接编号的域源校验证据立即作废，不能再授权新的取数
+            revoked = DomainSourceValidator().invalidate_for_connection(str(entry.get("连接编号", "")), reason="连接断开")
+            if revoked:
+                message += f"，已作废 {revoked} 条域源校验证据"
+        return entry, message

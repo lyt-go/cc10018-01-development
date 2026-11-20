@@ -167,3 +167,14 @@ def engine_validate_metric_chain(domain_code: str, metric_code: str) -> dict[str
     calc = MetricCalculator()
     result = calc.validate_metric_chain(domain_code, metric_code)
     return result
+
+
+@router.post("/engine/execute-plan")
+def engine_execute_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """直接执行一份已生成的聚合计划：执行前用域源校验包核对取数范围。"""
+    calc = MetricCalculator()
+    plan = payload.get("plan") or {}
+    result = calc.execute_compute_plan(plan)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result

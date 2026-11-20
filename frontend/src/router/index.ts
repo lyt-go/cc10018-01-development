@@ -19,6 +19,7 @@ const AccessDashboard = () => import('@/views/access_dashboard/index.vue')
 const SqlTemplate = () => import('@/views/sql_template/index.vue')
 const ResultCache = () => import('@/views/result_cache/index.vue')
 const QueryAudit = () => import('@/views/query_audit/index.vue')
+const DomainSourceValidation = () => import('@/views/domain_source_validation/index.vue')
 
 const router = createRouter({
   history: createWebHistory(),
@@ -42,6 +43,7 @@ const router = createRouter({
     { path: '/sql_template', name: 'sql_template', component: SqlTemplate },
     { path: '/result_cache', name: 'result_cache', component: ResultCache },
     { path: '/query_audit', name: 'query_audit', component: QueryAudit },
+    { path: '/domain_source_validation', name: 'domain_source_validation', component: DomainSourceValidation },
   ],
 })
 
